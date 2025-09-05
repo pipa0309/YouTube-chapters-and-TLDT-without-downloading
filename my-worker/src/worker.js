@@ -5,7 +5,6 @@ import { summarizeTranscript } from '../my-worker/src/summarizer.js';
 import { telegramSendMessage } from '../my-worker/src/telegram.js';
 
 // Объявляем переменные окружения (в wrangler секреты)
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
 // Handler в стиле Cloudflare Workers

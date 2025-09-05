@@ -1,23 +1,52 @@
-/**
- * Welcome to Cloudflare Workers! This is your first worker.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Learn more at https://developers.cloudflare.com/workers/
- */
+import { Router } from 'itty-router'
+import { parseChapters } from './parser.js'
+import { summarizeVideo } from './summarizer.js'
+import { sendTelegramMessage } from './telegram.js'
+
+const router = Router()
+
+router.get('/', () =>
+  new Response(JSON.stringify({ status: 'ok', message: 'YouTube Chapters & TLDR API running' }), {
+    headers: { 'Content-Type': 'application/json' }
+  })
+)
+
+router.get('/chapters', async (request) => {
+  const url = request.query?.url
+  if (!url) {
+    return new Response(JSON.stringify({ error: 'No video URL provided' }), { status: 400 })
+  }
+  try {
+    const chapters = await parseChapters(url)
+    return new Response(JSON.stringify(chapters), { headers: { 'Content-Type': 'application/json' } })
+  } catch (err) {
+    return new Response(JSON.stringify({ error: err.message }), { status: 500 })
+  }
+})
+
+router.get('/tldr', async (request) => {
+  const url = request.query?.url
+  if (!url) {
+    return new Response(JSON.stringify({ error: 'No video URL provided' }), { status: 400 })
+  }
+  try {
+    const tldr = await summarizeVideo(url)
+    return new Response(JSON.stringify(tldr), { headers: { 'Content-Type': 'application/json' } })
+  } catch (err) {
+    return new Response(JSON.stringify({ error: err.message }), { status: 500 })
+  }
+})
+
+router.post('/notify', async (request) => {
+  try {
+    const { chatId, message } = await request.json()
+    await sendTelegramMessage(chatId, message)
+    return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } })
+  } catch (err) {
+    return new Response(JSON.stringify({ error: err.message }), { status: 500 })
+  }
+})
 
 export default {
-	async fetch(request, env, ctx) {
-		const url = new URL(request.url);
-		switch (url.pathname) {
-			case '/message':
-				return new Response('Hello, World!');
-			case '/random':
-				return new Response(crypto.randomUUID());
-			default:
-				return new Response('Not Found', { status: 404 });
-		}
-	},
-};
+  fetch: (request, env, ctx) => router.handle(request, env, ctx)
+}

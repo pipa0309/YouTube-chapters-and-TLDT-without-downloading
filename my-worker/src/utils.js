@@ -1,16 +1,25 @@
-// Утилиты: извлекаем ID из ссылки, чанкер текста
-export function extractVideoId(urlOrText) {
-  const urlMatch = String(urlOrText).match(/(?:v=|youtu\.be\/|\/embed\/)([A-Za-z0-9_-]{6,})/);
-  return urlMatch ? urlMatch[1] : null;
+// Извлечение глав из HTML YouTube
+export function extractChapters(html) {
+  const match = html.match(/\"chapters\":\[(.*?)\]\}/)
+  if (!match) {
+    throw new Error('Главы не найдены в этом видео')
+  }
+
+  const jsonString = `[${match[1]}]`
+  const chaptersData = JSON.parse(jsonString)
+
+  return chaptersData.map(chapter => ({
+    title: chapter.title.simpleText,
+    time: chapter.startTimeMs
+      ? msToTime(parseInt(chapter.startTimeMs))
+      : '00:00'
+  }))
 }
 
-export function chunkText(text, maxChars = 3000) {
-  const chunks = [];
-  let start = 0;
-  while (start < text.length) {
-    const part = text.slice(start, start + maxChars);
-    chunks.push(part);
-    start += maxChars;
-  }
-  return chunks;
+// Перевод миллисекунд в mm:ss
+function msToTime(ms) {
+  const totalSeconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }

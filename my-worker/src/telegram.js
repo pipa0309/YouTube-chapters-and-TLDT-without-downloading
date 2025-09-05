@@ -1,7 +1,10 @@
-// Простая отправка сообщений и обработка webhook
-export async function telegramSendMessage(botToken, chatId, text, options = {}) {
-  const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-  const body = { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...options };
-  const res = await fetch(url, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
-  return res.json();
+export async function sendTelegramMessage(chatId, message) {
+  const token = TELEGRAM_BOT_TOKEN // возьми из env
+  const url = `https://api.telegram.org/bot${token}/sendMessage`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text: message })
+  })
+  if (!res.ok) throw new Error('Failed to send Telegram message')
 }
