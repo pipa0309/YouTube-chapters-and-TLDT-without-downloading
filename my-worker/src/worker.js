@@ -1,103 +1,164 @@
-import { extractVideoId } from '../my-worker/src/utils.js';
-import { fetchCaptions, fetchOEmbed } from './youtube.js';
-import { buildTranscriptText, generateChaptersFromItems } from '../my-worker/src/parser.js';
-import { summarizeTranscript } from '../my-worker/src/summarizer.js';
-import { telegramSendMessage } from '../my-worker/src/telegram.js';
-
-// Объявляем переменные окружения (в wrangler секреты)
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-
-// Handler в стиле Cloudflare Workers
 export default {
-    async fetch(request, env) {
-        const url = new URL(request.url);
-        if (url.pathname === '/health') {
-            return new Response('ok');
+  async fetch(request, env, ctx) {
+    // Обработка CORS предварительных запросов
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
         }
-        if (url.pathname === '/api/summarize') {
-            const videoUrl = url.searchParams.get('url');
-            if (!videoUrl) return new Response('Missing url', { status: 400 });
-            const videoId = extractVideoId(videoUrl);
-            if (!videoId) return new Response('Invalid YouTube URL', { status: 400 });
-
-            // Попробуем взять из KV кэш
-            const cacheKey = `video:${videoId}`;
-            const kv = env.KV_TRANSCRIPTS;
-            try {
-                const cached = await kv.get(cacheKey);
-                if (cached) return new Response(cached, { headers: { 'Content-Type': 'application/json' } });
-            } catch (e) {
-                // продолжим без кэша
-            }
-
-            const meta = await fetchOEmbed(videoId);
-            const caps = await fetchCaptions(videoId, ['ru', 'en']);
-            if (!caps) {
-                return new Response(JSON.stringify({ error: 'No subtitles available. Ask uploader to enable subtitles or use manual transcription.' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
-            }
-            const transcriptText = buildTranscriptText(caps.items);
-            const chapters = generateChaptersFromItems(caps.items);
-            const summaryRes = await summarizeTranscript(transcriptText, caps.lang || 'en');
-
-            const result = { videoId, meta, lang: caps.lang, chapters, summary: summaryRes.summary };
-            const sresult = JSON.stringify(result);
- // Кэшируем на 24 часа
-      try { await kv.put(cacheKey, sresult, { expirationTtl: 86400 }); } catch (e) {}
-      return new Response(sresult, { headers: { 'Content-Type': 'application/json' } });
+      });
     }
 
-    if (url.pathname === '/webhook' && request.method === 'POST') {
-      // Telegram webhook: простой парсер
-      const body = await request.json();
-      const message = body.message || body.edited_message;
-      if (!message) return new Response('ok');
-      const chatId = message.chat.id;
-      const text = message.text || '';
-      const vid = extractVideoId(text);
-      if (!vid) {
-        await telegramSendMessage(TELEGRAM_BOT_TOKEN, chatId, 'Отправьте ссылку на видео YouTube');
-        return new Response('ok');
-      }
-      // отправляем "в обработке"
-      await telegramSendMessage(TELEGRAM_BOT_TOKEN, chatId, 'Ищу субтитры и делаю TLDR...');
-
-      // делаем запрос к /api/summarize локально
-      const base = new URL(request.url);
-      base.pathname = '/api/summarize';
-      base.searchParams.set('url', `https://www.youtube.com/watch?v=${vid}`);
-      const apiRes = await fetch(base.toString());
-      const j = await apiRes.json();
-      if (j.error) {
-        await telegramSendMessage(TELEGRAM_BOT_TOKEN, chatId, `Ошибка: ${j.error}`);
-        return new Response('ok');
-      }
-      // Формируем сообщение: заголовки глав и краткое резюме
-      const lines = [];
-      lines.push(`<b>${j.meta?.title || 'Video'}</b>`);
-      lines.push('');
-      lines.push('<b>TLDR</b>');
-      lines.push(escapeHtml(j.summary));
-      lines.push('');
-      lines.push('<b>Chapters</b>');
-      for (const ch of j.chapters.slice(0, 10)) {
-        lines.push(`${formatTime(ch.start)} — ${escapeHtml(ch.title)}`);
-      }
-      await telegramSendMessage(TELEGRAM_BOT_TOKEN, chatId, lines.join('\n'));
-      return new Response('ok');
+    // Разрешаем только GET запросы
+    if (request.method !== 'GET') {
+      return new Response('Method not allowed', { status: 405 });
     }
 
-    // default
-    return new Response('Not found', { status: 404 });
+    try {
+      const url = new URL(request.url);
+      const videoId = url.searchParams.get('videoId');
+      
+      // Валидация параметров
+      if (!videoId) {
+        return new Response(JSON.stringify({ error: 'Missing videoId parameter' }), {
+          status: 400,
+          headers: { 
+            'Content-Type': 'application/json', 
+            'Access-Control-Allow-Origin': '*' 
+          }
+        });
+      }
+
+      // Проверяем наличие API ключей
+      if (!env.YOUTUBE_API_KEY) {
+        return new Response(JSON.stringify({ error: 'YouTube API key not configured' }), {
+          status: 500,
+          headers: { 
+            'Content-Type': 'application/json', 
+            'Access-Control-Allow-Origin': '*' 
+          }
+        });
+      }
+
+      if (!env.OPENAI_API_KEY) {
+        return new Response(JSON.stringify({ error: 'Groq API key not configured' }), {
+          status: 500,
+          headers: { 
+            'Content-Type': 'application/json', 
+            'Access-Control-Allow-Origin': '*' 
+          }
+        });
+      }
+
+      console.log('Fetching YouTube data for video:', videoId);
+      
+      // Получаем данные о видео с YouTube
+      const youtubeResponse = await fetch(
+        `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${videoId}&key=${env.YOUTUBE_API_KEY}`
+      );
+      
+      if (!youtubeResponse.ok) {
+        throw new Error(`YouTube API error: ${youtubeResponse.status}`);
+      }
+      
+      const youtubeData = await youtubeResponse.json();
+      
+      if (!youtubeData.items || youtubeData.items.length === 0) {
+        return new Response(JSON.stringify({ error: 'Video not found' }), {
+          status: 404,
+          headers: { 
+            'Content-Type': 'application/json', 
+            'Access-Control-Allow-Origin': '*' 
+          }
+        });
+      }
+      
+      const videoSnippet = youtubeData.items[0].snippet;
+      const videoDescription = videoSnippet.description || '';
+
+      // Формируем запрос к Groq API
+      const prompt = `
+Проанализируй описание YouTube видео и создай:
+1. Краткое изложение (TL;DR) видео длиной 2-3 предложения
+2. Главы с временными метками в формате MM:SS
+
+Описание видео:
+${videoDescription}
+
+Верни ответ ТОЛЬКО в формате JSON без каких-либо дополнительных объяснений:
+{
+  "tldr": "краткое изложение здесь",
+  "chapters": [
+    {"time": "00:00", "title": "Название главы"},
+    ...
+  ]
+}
+`;
+
+      const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${env.OPENAI_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'llama-3.1-70b-versatile',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.7,
+          max_tokens: 1000,
+          response_format: { type: "json_object" }
+        })
+      });
+
+      if (!groqResponse.ok) {
+        const errorData = await groqResponse.text();
+        console.error('Groq API error:', errorData);
+        throw new Error(`Groq API error: ${groqResponse.status}`);
+      }
+
+      const groqData = await groqResponse.json();
+      const content = groqData.choices[0].message.content;
+      
+      // Парсим JSON из ответа Groq
+      let result;
+      try {
+        result = JSON.parse(content);
+      } catch (e) {
+        console.error('Failed to parse Groq response:', content);
+        throw new Error('Failed to parse Groq response: ' + e.message);
+      }
+
+      // Форматируем финальный ответ
+      const responseData = {
+        videoId,
+        videoTitle: videoSnippet.title,
+        tldr: result.tldr,
+        chapters: result.chapters || []
+      };
+
+      return new Response(JSON.stringify(responseData), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        }
+      });
+
+    } catch (error) {
+      // Логируем ошибку для отладки
+      console.error('Error:', error.message);
+      
+      return new Response(JSON.stringify({ 
+        error: 'Internal server error', 
+        details: error.message 
+      }), {
+        status: 500,
+        headers: { 
+          'Content-Type': 'application/json', 
+          'Access-Control-Allow-Origin': '*' 
+        }
+      });
+    }
   }
 };
-
-function escapeHtml(s = '') {
-  return s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-}
-
-function formatTime(sec) {
-  const s = Math.floor(sec % 60).toString().padStart(2, '0');
-  const m = Math.floor((sec / 60) % 60).toString().padStart(2, '0');
-  const h = Math.floor(sec / 3600).toString();
-  return (h !== '0' ? h + ':' : '') + m + ':' + s;
-}
