@@ -176,3 +176,5 @@ test-*
 debug-*
 *-test.js
 my-worker/wrangler.toml
+yarn.lock
+yarn.lock
