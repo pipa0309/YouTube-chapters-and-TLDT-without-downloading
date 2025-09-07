@@ -1,25 +1,59 @@
-// Извлечение глав из HTML YouTube
-export function extractChapters(html) {
-  const match = html.match(/\"chapters\":\[(.*?)\]\}/)
-  if (!match) {
-    throw new Error('Главы не найдены в этом видео')
-  }
+/**
+ * Утилиты для работы с HTTP ответами
+ */
 
-  const jsonString = `[${match[1]}]`
-  const chaptersData = JSON.parse(jsonString)
+export const JSON_HEADERS = {
+  'content-type': 'application/json; charset=utf-8',
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type'
+};
 
-  return chaptersData.map(chapter => ({
-    title: chapter.title.simpleText,
-    time: chapter.startTimeMs
-      ? msToTime(parseInt(chapter.startTimeMs))
-      : '00:00'
-  }))
+/**
+ * Успешный ответ с кэшированием
+ */
+export function okResponse(data, ttlSec = 7200) {
+  return new Response(JSON.stringify(data), {
+    headers: {
+      ...JSON_HEADERS,
+      'Cache-Control': `public, max-age=${ttlSec}`
+    }
+  });
 }
 
-// Перевод миллисекунд в mm:ss
-function msToTime(ms) {
-  const totalSeconds = Math.floor(ms / 1000)
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+/**
+ * Ответ с ошибкой
+ */
+export function errorResponse(status, message, extra = {}) {
+  return new Response(JSON.stringify({
+    success: false,
+    error: message,
+    ...extra
+  }), {
+    status,
+    headers: JSON_HEADERS
+  });
+}
+
+/**
+ * CORS ответ для preflight запросов
+ */
+export function corsResponse() {
+  return new Response(null, {
+    headers: {
+      ...JSON_HEADERS,
+      'Access-Control-Max-Age': '86400'
+    }
+  });
+}
+
+/**
+ * Хэширование текста через SHA-256
+ */
+export async function sha256(text) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(text);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hash));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
